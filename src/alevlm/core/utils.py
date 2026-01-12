@@ -32,107 +32,75 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 import json
 import io
+import functools
+from pathlib import Path
+import os
 
 def perplexity(loss:list[torch.tensor]):
     m=len(loss)
     return torch.exp(1/m*torch.sum(loss))
 
-def preprocess(sample,max_caption_length):
-    """Process each sample from WebDataset"""
-    # Define transform pipeline
-    image_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
-    # Decode image from JPEG bytes
-    image = Image.open(io.BytesIO(sample['jpg'])).convert('RGB')
-    image = image_transform(image)
-    
-    # Parse metadata
-    metadata = json.loads(sample['json'])
-    tokens = metadata['tokens']
-    
-    # Pad or truncate to max_caption_length
-    if len(tokens) > max_caption_length:
-        tokens = tokens[:max_caption_length]
-    else:
-        tokens = tokens + [0] * (max_caption_length - len(tokens))
-    
-    tokens = torch.tensor(tokens, dtype=torch.long)
-    
-    return {
-        'image': image,
-        'tokens': tokens,
-        'text': sample['txt']
-    }
-
 def create_webdataset_loader(
     data_dir: str,
     split: str,
     batch_size: int,
-    img_size: int = 224,
     max_caption_length: int = 77,
-    num_workers: int = 4,
-    shuffle_buffer: int = 1000
 ):
-    """
-    Create WebDataset dataloader with infinite iteration support
-    """
+    data_path = Path(data_dir).resolve()
+    tar_files = sorted(data_path.glob(f"{split}-*.tar"))
     
+    if not tar_files:
+        raise ValueError(f"No tar files found in {data_path} matching {split}-*.tar")
     
+    print(f"Found {len(tar_files)} tar files for {split}")
     
+    # Convert Windows paths to file:// URLs
+    urls = [f"file://{str(f).replace(chr(92), '/')}" for f in tar_files]
     
-    # Create dataset from shards
-    urls = f"{data_dir}/{split}-*.tar"
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    def process(sample):
+        # Decode image from bytes
+        image_bytes = sample['jpg']
+        image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        image = transform(image)
+        
+        # Decode JSON from bytes
+        metadata_bytes = sample['json']
+        if isinstance(metadata_bytes, bytes):
+            metadata = json.loads(metadata_bytes.decode('utf-8'))
+        else:
+            metadata = metadata_bytes
+        
+        tokens = metadata['tokens']
+        if len(tokens) > max_caption_length:
+            tokens = tokens[:max_caption_length]
+        else:
+            tokens = tokens + [0] * (max_caption_length - len(tokens))
+        
+        return {
+            'image': image,
+            'tokens': torch.tensor(tokens, dtype=torch.long),
+            'text': sample.get('txt', b'').decode('utf-8') if isinstance(sample.get('txt', ''), bytes) else sample.get('txt', '')
+        }
     
     dataset = (
-        wds.Dataset(urls)
-        .shuffle(shuffle_buffer)
-        .decode("rgb")
-        .map(preprocess)
-        .batched(batch_size, partial=False)
+        wds.WebDataset(urls, shardshuffle=False)
+        .shuffle(1000)
+        .map(process)  # Process BEFORE decode - decode isn't working right
+        .batched(batch_size)
     )
     
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=None, 
-        num_workers=num_workers,
-        pin_memory=True
-    ) 
+    loader = DataLoader(dataset, batch_size=None, num_workers=0)
     
     return loader
 
-def data_loading(
-    x: NDArray[np.int_],
-    batch_size,
-    context_length,
-    device='cuda:0'
-    ):
-    # Check if dataset is large enough for at least one sequence
-    if x.shape[0] < context_length + 1:
-        raise ValueError(
-            f'Dataset too small: need at least {context_length + 1} tokens, '
-            f'got {x.shape[0]}'
-        )
-    
-    # Sample random starting indices for each sequence in the batch
-    # We need context_length + 1 tokens (for input and target)
-    # So valid starting positions are 0 to len(x) - context_length - 1
-    num_possible_starts = x.shape[0] - context_length
-    start_indices = np.random.randint(0, num_possible_starts, size=batch_size)
-    
-    # Extract sequences
-    inputs = np.stack([x[i:i + context_length] for i in start_indices])
-    targets = np.stack([x[i + 1:i + context_length + 1] for i in start_indices])
-    
-    # Convert to tensors and move to device
-    inputs = torch.from_numpy(inputs).to(device)
-    targets = torch.from_numpy(targets).to(device)
-    
-    return inputs, targets
 
-# tstsh ?'[ ]
+
 
 def save_checkpoint(model: nn.Module, optimizer: optim.Optimizer, iteration: int, out: str):
     model_obj = {
@@ -223,28 +191,20 @@ def training_together(
     ):
     timestamp = int(time.time())
     writer = SummaryWriter(log_dir=f"runs/{prefix_name_experiment}_{timestamp}")
-    
 
-    # Create dataloaders (infinite iteration)
     print("Creating dataloaders...")
     train_loader = create_webdataset_loader(
         data_dir=train_path,
         split='train',
         batch_size=batch_size,
-        img_size=img_size,
         max_caption_length=context_length,
-        num_workers=4,
-        shuffle_buffer=1000
     )
     
     valid_loader = create_webdataset_loader(
         data_dir=valid_path,
         split='validation',
         batch_size=batch_size,
-        img_size=img_size,
         max_caption_length=context_length,
-        num_workers=2,
-        shuffle_buffer=100
     )
     
     train_iter = iter(train_loader)

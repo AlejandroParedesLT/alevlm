@@ -129,33 +129,88 @@ class RoPE(nn.Module):
         Returns:
             Rotated tensor of same shape 
         """
-        batch_size , seq_len , d_k=x.shape
-        if x.ndim==4:
-            seq_len=x.shape[2]
+        # Handle both 3D and 4D inputs
+        if x.ndim == 4:
+            batch_size, num_heads, seq_len, d_head = x.shape
+            is_4d = True
+        elif x.ndim == 3:
+            batch_size, seq_len, d_head = x.shape
+            num_heads = 1
+            is_4d = False
         else:
-            seq_len=x.shape[1]
+            raise ValueError(f"Expected 3D or 4D tensor, got {x.ndim}D")
 
+        # if token_positions is None:
+        #     # Get cos and sin for the seq length
+        #     cos=self.cos_cached[:seq_len,:]
+        #     sin=self.sin_cached[:seq_len,:]
+        # else:
+        #     cos = self.cos_cached[token_positions]
+        #     sin = self.sin_cached[token_positions]
+            
+        # x_reshaped = rearrange(x, 'b s (d two) -> b s d two', two=2)
+        
+        #  # Extract the two elements of each pair
+        # x1 = x_reshaped[..., 0]  # [batch_size, seq_len, d_k/2]
+        # x2 = x_reshaped[..., 1]  # [batch_size, seq_len, d_k/2]
+        
+        # # Apply rotation matrix:
+        # rotated_x1 = x1 * cos - x2 * sin  # [batch_size, seq_len, d_k/2]
+        # rotated_x2 = x1 * sin + x2 * cos  # [batch_size, seq_len, d_k/2]
+        
+        # # Stack back into pairs and reshape to original shape
+        # rotated = torch.stack([rotated_x1, rotated_x2], dim=-1)  # [batch_size, seq_len, d_k/2, 2]
+        # rotated = rearrange(rotated, 'b s d two -> b s (d two)')  # [batch_size, seq_len, d_k]
+        
+        # return rotated
         if token_positions is None:
             # Get cos and sin for the seq length
-            cos=self.cos_cached[:seq_len,:]
-            sin=self.sin_cached[:seq_len,:]
+            cos = self.cos_cached[:seq_len, :]  # [seq_len, d_head/2]
+            sin = self.sin_cached[:seq_len, :]  # [seq_len, d_head/2]
         else:
             cos = self.cos_cached[token_positions]
             sin = self.sin_cached[token_positions]
+        
+        # Reshape based on input dimensions
+        if is_4d:
+            # x: [batch, heads, seq, d_head]
+            # Rearrange to pairs
+            x_reshaped = rearrange(x, 'b h s (d two) -> b h s d two', two=2)
             
-        x_reshaped = rearrange(x, 'b s (d two) -> b s d two', two=2)
-        
-         # Extract the two elements of each pair
-        x1 = x_reshaped[..., 0]  # [batch_size, seq_len, d_k/2]
-        x2 = x_reshaped[..., 1]  # [batch_size, seq_len, d_k/2]
-        
-        # Apply rotation matrix:
-        rotated_x1 = x1 * cos - x2 * sin  # [batch_size, seq_len, d_k/2]
-        rotated_x2 = x1 * sin + x2 * cos  # [batch_size, seq_len, d_k/2]
-        
-        # Stack back into pairs and reshape to original shape
-        rotated = torch.stack([rotated_x1, rotated_x2], dim=-1)  # [batch_size, seq_len, d_k/2, 2]
-        rotated = rearrange(rotated, 'b s d two -> b s (d two)')  # [batch_size, seq_len, d_k]
+            # Extract pairs
+            x1 = x_reshaped[..., 0]  # [batch, heads, seq, d_head/2]
+            x2 = x_reshaped[..., 1]  # [batch, heads, seq, d_head/2]
+            
+            # Expand cos/sin to match: [seq, d/2] -> [1, 1, seq, d/2]
+            cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq, d_head/2]
+            sin = sin.unsqueeze(0).unsqueeze(0)  # [1, 1, seq, d_head/2]
+            
+            # Apply rotation
+            rotated_x1 = x1 * cos - x2 * sin
+            rotated_x2 = x1 * sin + x2 * cos
+            
+            # Stack and reshape back
+            rotated = torch.stack([rotated_x1, rotated_x2], dim=-1)  # [batch, heads, seq, d/2, 2]
+            rotated = rearrange(rotated, 'b h s d two -> b h s (d two)')  # [batch, heads, seq, d_head]
+            
+        else:  # 3D case
+            # x: [batch, seq, d_head]
+            x_reshaped = rearrange(x, 'b s (d two) -> b s d two', two=2)
+            
+            x1 = x_reshaped[..., 0]  # [batch, seq, d_head/2]
+            x2 = x_reshaped[..., 1]  # [batch, seq, d_head/2]
+            
+            # Expand cos/sin: [seq, d/2] -> [1, seq, d/2]
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
+            
+            # Apply rotation
+            rotated_x1 = x1 * cos - x2 * sin
+            rotated_x2 = x1 * sin + x2 * cos
+            
+            # Stack and reshape back
+            rotated = torch.stack([rotated_x1, rotated_x2], dim=-1)  # [batch, seq, d/2, 2]
+            rotated = rearrange(rotated, 'b s d two -> b s (d two)')  # [batch, seq, d_head]
         
         return rotated
 
@@ -298,9 +353,9 @@ class MultiheadSelfAttention(nn.Module):
         proj_k=self.W_k(x)        
         proj_v=self.W_v(x)
         
-        proj_Q=rearrange(proj_q,'b s (n d) -> b h s d',n=self.num_heads,d=self.d_head)
-        proj_K=rearrange(proj_k,'b s (n d) -> b h s d',n=self.num_heads,d=self.d_head)
-        proj_V=rearrange(proj_v,'b s (n d) -> b h s d',n=self.num_heads,d=self.d_head)
+        proj_Q=rearrange(proj_q,'b s (h d) -> b h s d',h=self.num_heads,d=self.d_head)
+        proj_K=rearrange(proj_k,'b s (h d) -> b h s d',h=self.num_heads,d=self.d_head)
+        proj_V=rearrange(proj_v,'b s (h d) -> b h s d',h=self.num_heads,d=self.d_head)
         
         # Expand token_positions for all heads if provided
         batch_size, num_heads, seq_len, d_head = proj_Q.shape
@@ -447,6 +502,9 @@ class VIT(nn.Module):
         ):
         super().__init__()
 
+        if d_model % num_heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by num_heads ({num_heads})")
+
         self.path_embeding=PatchEmbeddings(
             img_size=img_size,
             patch_size=patch_size,
@@ -494,7 +552,7 @@ class VIT(nn.Module):
 
         # x=self.dropout(x)
         for transformer_block in self.transformer_blocks:
-            x=transformer_block(x)
+            x=transformer_block(x,past_kv_values=None,cache_position=None,position_ids=None)
         
         x=self.layer_norm(x[:,0])
         return x
