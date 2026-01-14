@@ -11,7 +11,7 @@ import typing
 import json
 
 from alevlm.core.modules import (
-    MoEVLM
+    AleMoEVLM
 )
 from alevlm.core.utils import (
     training_together
@@ -228,7 +228,7 @@ def main():
     valid_data_dir = project_root / "data" #/ config.val_data #"TinyStoriesV2-GPT4-valid.txt"
     ckpt_path = project_root / "assets" / config.ckpt_path
 
-    alevlm=MoEVLM(
+    alevlm=AleMoEVLM(
         vocab_size=config.vocab_size,
         context_length=config.context_length,
         d_ff=config.d_ff,

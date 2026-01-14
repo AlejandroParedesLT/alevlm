@@ -230,8 +230,8 @@ class neural_operation:
         d_k = proj_q.size(-1)
         proj_k_t=proj_k.transpose(-2, -1) #rearrange(proj_k,'batch heads seq dim -> batch heads dim seq')
         scores = (proj_q @ proj_k_t) / torch.sqrt(torch.tensor(d_k, dtype=proj_q.dtype, device=proj_q.device))
-        mask = mask.to(scores.device)
         if mask is not None:
+            mask = mask.to(scores.device)
             scores = scores.masked_fill(~mask, float('-inf'))
         attention_matrix=neural_operation.softmax(scores,dim=-1)
         output=attention_matrix @ proj_v
@@ -771,7 +771,7 @@ class SparseMoEBlock(nn.Module):
         x+=residual
         return x
     
-class MoEVLM(nn.Module):
+class AleMoEVLM(nn.Module):
     def __init__(
             self,
             vocab_size: int,

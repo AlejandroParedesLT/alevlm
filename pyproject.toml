@@ -21,7 +21,10 @@ dependencies = [
     "tqdm>=4.67.1",
     "wandb>=0.19.7",
     "ty>=0.0.1a16",
-    "resources>=0.0.1"
+    "resources>=0.0.1",
+    "webdataset",
+    "tensorboard",
+    "torchvision"
 ]
 
 

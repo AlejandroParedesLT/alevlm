@@ -5,6 +5,7 @@ d_ff: 1344
 rope_theta: 10000
 n_layers: 4
 n_heads: 16
+top_k: 50
 image_d_model: 192
 num_experts: 16
 img_size: 256
